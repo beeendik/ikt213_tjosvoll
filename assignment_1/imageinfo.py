@@ -22,7 +22,7 @@ print_image_information("lena-1.png")
 def print_video_information():
 
     #åpner standardkamera
-    cam = cv2.VideoCapture(0)
+    cam = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
     # tester en frame for å se om kamera funker
     ret, frame = cam.read()
@@ -36,7 +36,7 @@ def print_video_information():
     width = cam.get(cv2.CAP_PROP_FRAME_WIDTH)
 
     #skirver kamerainfo til txt fil
-    with open("../solutions/camera_outputs.txt", "w") as f:
+    with open("solutions/camera_outputs.txt", "w") as f:
         f.write(f"fps: {fps}\n")
         f.write(f"height: {height}\n")
         f.write(f"width: {width}\n")
