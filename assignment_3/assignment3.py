@@ -11,9 +11,7 @@ def sobel_edge_detection(image):
         gray = image.copy()
 
     blurred = cv2.GaussianBlur(gray, ksize=(3, 3), sigmaX=0)
-
     sobel = cv2.Sobel(blurred, cv2.CV_64F, dx=1, dy=1, ksize=1)
-
     sobel_edges = cv2.convertScaleAbs(sobel)
 
     return sobel_edges
@@ -26,7 +24,6 @@ def canny_edge_detection(image, threshold_1=50, threshold_2=50):
         gray = image.copy()
 
     blurred = cv2.GaussianBlur(gray, ksize=(3, 3), sigmaX=0)
-
     edges = cv2.Canny(blurred, threshold_1, threshold_2)
 
     return edges
@@ -43,12 +40,9 @@ def template_match(image, template):
         gray_template = template.copy()
 
     w, h = gray_template.shape[::-1]
-
     res = cv2.matchTemplate(gray, gray_template, cv2.TM_CCOEFF_NORMED)
-
     threshold = 0.9
     loc = np.where(res >= threshold)
-
     result_img = image.copy()
 
     for pt in zip(*loc[::-1]):
@@ -104,13 +98,13 @@ def main():
         print(f"Error: could not read template fro {template_path}")
         return
 
-    #CANNY
+    #Sobel
     sobel_edges = sobel_edge_detection(img)
     sobel_save_path = "sobel_edges.png"
     cv2.imwrite(sobel_save_path, sobel_edges)
     print(f"Sobel edge-detected image saved at: {sobel_save_path}")
 
-    #SOBEL
+    #canny
     canny_edges = canny_edge_detection(img, threshold_1=50, threshold_2=50)
     canny_save_path = "canny_edges.png"
     cv2.imwrite(canny_save_path, canny_edges)
