@@ -1,149 +1,120 @@
 import cv2
+import numpy as np
 import os
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_score, recall_score, f1_score
 import time
 import psutil
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import matplotlib.pyplot as plt
 
 
-def match_images(img1, img2, detector="ORB"):
-    if detector == "ORB":
-        feature = cv2.ORB_create()
-        norm = cv2.NORM_HAMMING
-    elif detector == "SIFT":
-        feature = cv2.SIFT_create()
-        norm = cv2.NORM_L2
-    else:
-        raise ValueError("Detector must be 'ORB' or 'SIFT'")
+def preprocess_fingerprint(image_path):
+    img = cv2.imread(image_path, 0)
+    _, img_bin = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    return img_bin
 
-    # Detect and compute
-    kp1, des1 = feature.detectAndCompute(img1, None)
-    kp2, des2 = feature.detectAndCompute(img2, None)
 
+def match_fingerprints(img1_path, img2_path):
+    img1 = preprocess_fingerprint(img1_path)
+    img2 = preprocess_fingerprint(img2_path)
+
+    # Initialize ORB detector
+    orb = cv2.ORB_create(nfeatures=1000)
+
+    # Find keypoints and descriptors
+    kp1, des1 = orb.detectAndCompute(img1, None)
+    kp2, des2 = orb.detectAndCompute(img2, None)
     if des1 is None or des2 is None:
-        return 0  # no matches possible
+        return 0, None  # Return 0 matches if no descriptors found
 
-    bf = cv2.BFMatcher(norm, crossCheck=True)
-    matches = bf.match(des1, des2)
+    # Use Brute-Force Matcher with Hamming distance
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
 
-    # Similarity = fraction of matches that are "good"
-    good = [m for m in matches if m.distance < 50]
-    return len(good) / max(1, len(matches))  # normalized score
+    # KNN Match
+    matches = bf.knnMatch(des1, des2, k=2)
+
+    # Apply Lowe's ratio test (keep only good matches)
+    good_matches = [m for m, n in matches if m.distance < 0.7 * n.distance]
+
+    # Draw only good matches
+    match_img = cv2.drawMatches(img1, kp1, img2, kp2, good_matches, None,
+                                flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+    return len(good_matches), match_img
 
 
-def evaluate_pipeline(dataset_dir, detector="ORB", threshold=0.3):
-    y_true = []
-    y_pred = []
-
-    times = []
-    memories = []
+def process_dataset(dataset_path, results_folder):
+    threshold = 20  # Adjust this based on tests
+    y_true = []  # True labels (1 for same, 0 for different)
+    y_pred = []  # Predicted labels
+    times, memories, cpus = [], [], []
 
     process = psutil.Process(os.getpid())
 
-    for folder in os.listdir(dataset_dir):
-        folder_path = os.path.join(dataset_dir, folder)
-        if not os.path.isdir(folder_path):
-            continue
+    # Create results_orb folder if it does not exist
+    os.makedirs(results_folder, exist_ok=True)
 
-        files = sorted(os.listdir(folder_path))
-        if len(files) < 2:
-            continue
+    # Loop through all subdirectories
+    for folder in sorted(os.listdir(dataset_path)):
+        folder_path = os.path.join(dataset_path, folder)
+        if os.path.isdir(folder_path):  # Check if it's a valid directory
+            image_files = [f for f in os.listdir(folder_path) if f.endswith(('.tif', '.png', '.jpg'))]
+            if len(image_files) != 2:
+                print(f"Skipping {folder}, expected 2 images but found {len(image_files)}")
+                continue  # Skip if the folder doesn't have exactly 2 images
+            img1_path = os.path.join(folder_path, image_files[0])
+            img2_path = os.path.join(folder_path, image_files[1])
 
-        img1 = cv2.imread(os.path.join(folder_path, files[0]), cv2.IMREAD_GRAYSCALE)
-        img2 = cv2.imread(os.path.join(folder_path, files[1]), cv2.IMREAD_GRAYSCALE)
+            start_time = time.time()
+            match_count, match_img = match_fingerprints(img1_path, img2_path)
+            elapsed_time = time.time() - start_time
+            times.append(elapsed_time)
 
-        # Ground truth
-        label = 1 if folder.startswith("same") else 0
+            memory_usage = process.memory_info().rss / (1024 * 1024)
+            cpu_percent = process.cpu_percent(interval=None)
+            memories.append(memory_usage)
+            cpus.append(cpu_percent)
 
-        # Measure time & memory
-        start_time = time.time()
-        score = match_images(img1, img2, detector)
-        end_time = time.time()
+            # Determine the ground truth (expected label)
+            actual_match = 1 if "same" in folder.lower() else 0  # 1 for same, 0 for different
+            y_true.append(actual_match)
 
-        mem = process.memory_info().rss / (1024 * 1024)  # in MB
+            # Decision based on good matches count
+            predicted_match = 1 if match_count > threshold else 0
+            y_pred.append(predicted_match)
+            result = "orb_bf_matched" if predicted_match == 1 else "orb_bf_unmatched"
+            print(f"{folder}: {result.upper()} ({match_count} good matches)")
 
-        times.append(end_time - start_time)
-        memories.append(mem)
+            # Save match image in the results_orb folder
+            if match_img is not None:
+                match_img_filename = f"{folder}_{result}.png"
+                match_img_path = os.path.join(results_folder, match_img_filename)
+                cv2.imwrite(match_img_path, match_img)
+                print(f"Saved match image at: {match_img_path}")
 
-        # Prediction
-        pred = 1 if score >= threshold else 0
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred)
+    rec = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
 
-        y_true.append(label)
-        y_pred.append(pred)
+    print("\nPerformance Summary (ORB)")
+    print(f"Accuracy:   {acc:.4f}")
+    print(f"Precision:  {prec:.4f}")
+    print(f"Recall:     {rec:.4f}")
+    print(f"F1 Score:   {f1:.4f}")
+    print(f"Avg. Time:  {np.mean(times):.4f} seconds per pair")
+    print(f"Avg. Memory:{np.mean(memories):.2f} MB")
+    print(f"Avg. CPU:   {np.mean(cpus):.2f}%")
 
-
-    metrics = {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "precision": precision_score(y_true, y_pred, zero_division=0),
-        "recall": recall_score(y_true, y_pred, zero_division=0),
-        "f1": f1_score(y_true, y_pred, zero_division=0),
-        "avg_time": np.mean(times),
-        "avg_memory": np.mean(memories),
-    }
-    return metrics
-
-
-def show_matches(folder_path, detector="ORB", top_n=30):
-    # Get the two image file names
-    files = sorted(os.listdir(folder_path))
-    if len(files) < 2:
-        print("Folder does not contain 2 images.")
-        return
-
-    # Load both fingerprint images in grayscale
-    img1 = cv2.imread(os.path.join(folder_path, files[0]), cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(os.path.join(folder_path, files[1]), cv2.IMREAD_GRAYSCALE)
-
-    # Choose detector
-    if detector == "ORB":
-        feature = cv2.ORB_create()
-        norm = cv2.NORM_HAMMING
-    else:
-        feature = cv2.SIFT_create()
-        norm = cv2.NORM_L2
-
-    # Compute keypoints & descriptors
-    kp1, des1 = feature.detectAndCompute(img1, None)
-    kp2, des2 = feature.detectAndCompute(img2, None)
-
-    if des1 is None or des2 is None:
-        print("No descriptors found in one of the images.")
-        return
-
-    # Match with BFMatcher
-    bf = cv2.BFMatcher(norm, crossCheck=True)
-    matches = bf.match(des1, des2)
-    matches = sorted(matches, key=lambda x: x.distance)
-
-    # Draw matches
-    match_img = cv2.drawMatches(img1, kp1, img2, kp2, matches[:top_n], None,
-                                flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-
-    # Show with matplotlib
-    plt.figure(figsize=(12, 6))
-    plt.imshow(match_img, cmap="gray")
-    plt.title(f"{detector} Matches (Top {top_n}) - {os.path.basename(folder_path)}")
-    plt.axis("off")
+    # Compute and display confusion matrix
+    labels = ["Different (0)", "Same (1)"]
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    plt.figure(figsize=(6, 5))
+    disp.plot(cmap="Blues", values_format="d")
+    plt.title("Confusion Matrix orb_bf")
     plt.show()
 
 
-if __name__ == "__main__":
-    dataset_dir = "data_check"  # change this if your dataset folder has another name
-
-    print("Evaluating ORB...")
-    orb_metrics = evaluate_pipeline(dataset_dir, detector="ORB")
-
-    print("Evaluating SIFT...")
-    sift_metrics = evaluate_pipeline(dataset_dir, detector="SIFT")
-
-    # Print results
-    print("\nComparison:")
-    print(f"{'Metric':<15} {'ORB':<15} {'SIFT':<15}")
-    print("-" * 40)
-    for key in ["accuracy", "precision", "recall", "f1", "avg_time", "avg_memory"]:
-        print(f"{key:<12} {orb_metrics[key]:<15.4f} {sift_metrics[key]:<15.4f}")
-
-    show_matches("data_check/same_1", detector="ORB", top_n=30)
-
-    show_matches("data_check/different_1", detector="ORB", top_n=30)
+# Example usage
+dataset_path = r"data_check"
+results_folder = r"results_orb"
+process_dataset(dataset_path, results_folder)
